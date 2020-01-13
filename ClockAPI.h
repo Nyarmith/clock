@@ -1,40 +1,138 @@
 #pragma once
 
+#include "TimeUtils.h"
+
 // x axis pins
-const int MXSTEP = 3;
-const int MXDIR = A2;
+constexpr int MXSTEP = 3;
+constexpr int MXDIR = A2;
 
 // y axis pins
-const int MYSTEP = 5;
-const int MYDIR = 4;
+constexpr int MYSTEP = 5;
+constexpr int MYDIR = 4;
 
 // hour axis pins
-const int MHSTEP = 7; //A2
-const int MHDIR = 6; //A3
+constexpr int MHSTEP = 7; //A2
+constexpr int MHDIR = 6; //A3
 
-// motor directions
-const bool DIR_MINUS = HIGH;
-const bool DIR_PLUS = LOW;
+// limit switches
+constexpr int LSWITCHY = 10;
+constexpr int LSWITCHX = 9;
+constexpr int LSWITCHH = 8;
 
-// buttons and switches
-const int LSWITCHY = 10;
-const int LSWITCHX = 9;
-const int LSWITCHH = 8;
+// time setting buttons
+constexpr int HR_MIN_BUTTON_PIN = A3;
+constexpr int UP_BUTTON_PIN = A6;
+constexpr int DOWN_BUTTON_PIN = A7;
 
-const int BUTTON1 = A3;
-const int BUTTON2 = A6;
-const int BUTTON3 = A7;
+constexpr int SYNCPIN = 2;
 
-const int SYNCPIN = 2;
+template <uint8_t pin>
+class Button
+{
+public:
+    void init()
+    {
+        pinMode(pin, INPUT_PULLUP);
+        prevState_ = digitalRead(pin);
+        lastChange_ = micros();
+    }
+
+    // return true on transition from button press, as well as true once per repeatTime after that
+    bool new_press(const uint32_t micros)
+    {
+        bool curState = prevState_;
+
+        // don't read the new pin if within debounce time
+        if (micros - lastChange_ > dbTime_)
+        {
+            curState = digitalRead(pin);
+            if (curState != prevState_) lastChange_ = micros;
+        }
+
+        bool wasPushed = false;
+        if (curState == pushed_ &&
+                (curState != prevState_ || micros - lastRepeat_ > repeatTime_))
+        {
+            wasPushed = true;
+            lastRepeat_ = micros;
+        }
+
+        prevState_ = curState;
+        return wasPushed;
+    }
+
+    bool is_pressed()
+    {
+        return digitalRead(pin) == pushed_;
+    }
+
+private:
+    static constexpr uint32_t dbTime_ = 10000; // 10ms switch debounce time
+    static constexpr uint32_t repeatTime_ = 500000; // repeat every 0.5 seconds
+
+    static constexpr bool pushed_ = LOW;
+
+    bool prevState_;
+    uint32_t lastChange_;
+    uint32_t lastRepeat_;
+};
+
 
 // initializes motor pins - must be called before any of the following functions
-void initClockPins()
+class ClockUI
 {
-  pinMode(BUTTON1, INPUT_PULLUP);
-  pinMode(BUTTON2, INPUT_PULLUP);
-  pinMode(BUTTON3, INPUT_PULLUP);
+public:
+    void init()
+    {
+        upButton.init();
+        downButton.init();
+        hrMinButton.init();
+    }
 
-}
+    void update(Time &time, RTC_Interface &rtc, const uint32_t micros)
+    {
+        if (upButton.new_press(micros))
+        {
+            indexTime(time, rtc, up_);
+        }
+        if (downButton.new_press(micros))
+        {
+            indexTime(time, rtc, down_);
+        }
+    }
+
+private:
+    Button<UP_BUTTON_PIN> upButton;
+    Button<DOWN_BUTTON_PIN> downButton;
+    Button<HR_MIN_BUTTON_PIN> hrMinButton;
+
+    static constexpr bool hourSet_ = false;
+    static constexpr bool minSet_ = !hourSet_;
+
+    static constexpr bool up_ = true;
+    static constexpr bool down_ = !up_;
+
+    void indexTime(Time &t, RTC_Interface &rtc, bool dir)
+    {
+        int8_t increment = (dir == up_ ? 1 : -1);
+        int8_t hour = t.Hour;
+        int8_t min = t.Min;
+
+        if (hrMinButton.is_pressed() == hourSet_) hour += increment;
+        else min += increment;
+
+        if (hour > 23) hour = 0;
+        else if (hour < 0) hour = 23;
+
+        if (min > 59) min = 0;
+        if (min < 0) min = 59;
+
+        t.Min = min;
+        t.Hour = hour;
+
+        rtc.set(t);
+    }
+};
 
 // higher level abstractions
 using step_t=int32_t;
@@ -49,8 +147,10 @@ private:
 
     uint32_t prev_micros = {0};
     step_t cur_step = {0};
-    // max speed units: steps per second
-    // max accel units: steps per second per second
+
+    // motor directions
+    static constexpr bool DIR_MINUS = HIGH;
+    static constexpr bool DIR_PLUS = LOW;
 
     void step(bool dir, uint32_t micros)
     {
